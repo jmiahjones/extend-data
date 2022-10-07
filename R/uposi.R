@@ -1,73 +1,148 @@
 library(R6)
+library(checkmate)
+library(future.apply)
 
 Uposi <- R6::R6Class(
   "Uposi",
   public = list(
     
     x = NULL,
-    Sigma = NULL,
-    Sigmainv = NULL,
     y = NULL,
     n = NULL,
     p = NULL,
+    
+    stage = NULL,
+    
     alpha = NULL,
     Nboot = NULL,
     seed = NULL,
     
     M = NULL,
     coef = NULL,
+    target_type = NULL,
+    
+    standardize = NULL,
+    intercept = NULL,
+    center_outcome = NULL,
+    
     boots = NULL,
     C_alpha = NULL,
     C_alpha_H0 = NULL,
-    C_alpha_H0i = NULL,
+    
+    Sigma = NULL,
+    Sigmainv = NULL,
+    
     ci = NULL,
     ci_2 = NULL,
     pred_i = NULL,
-    pval = NULL,
+    
+    test_stat_H0 = NULL,
     pval_H0 = NULL,
-    pval_H0i = NULL,
+    
+    uposi_stage2 = NULL,
+    a2 = NULL,
+    original_blip = NULL,
     
     initialize = function(
-      x, y, M = NULL, coef=NULL, alpha = 0.05, Nboot = 1000, seed = NULL
+      x, y, stage, M, coef=NULL, 
+      uposi_stage2 = NULL, a2 = NULL, original_blip = NULL,
+      alpha = 0.05,
+      Nboot = 1000, seed = NULL,
+      target_type = "fixed",
+      standardize = T,
+      intercept = F,
+      center_outcome = F
     ) {
       # TODO: How to handle intercept? Ensure X doesn't have the constant
       # column? Translate M to intercept numbering?
-      self$x = as.matrix(x)
-      self$y = private$reshape_colmat(y)
+      
+      
+      assert_matrix(x, any.missing = F)
+      self$x = x
       self$n = nrow(x)
       self$p = ncol(x)
+      if(test_numeric(y, any.missing = F, len = self$n)) {
+        y <- matrix(y, ncol=1)
+      }
+      assert_matrix(y, any.missing = F, nrows = self$n, ncols = 1)
+      self$y = y
       
-      stopifnot(
-        nrow(y) == self$n, ncol(y) == 1,
-        length(alpha) == 1, is.numeric(alpha), 0 < alpha, alpha < 1,
-        length(Nboot) == 1, is.numeric(Nboot),
-        is.null(seed) || (length(seed) == 1 && is.numeric(seed)),
-        is.null(M) || (is.numeric(M)),
-        is.null(coef) || is.matrix(coef) || is.numeric(coef)
+      stage <- assert_count(stage, coerce=T, positive = T)
+      assert_integer(stage, upper=2L)
+      self$stage = stage
+      
+      M <- assert_integerish(M, lower=1, upper=self$p, 
+                             sorted=T, unique=T, coerce=T)
+      self$M = M
+      assert(
+        check_numeric(coef, len=length(M)),
+        check_matrix(coef, nrows=length(M), ncols=1),
+        check_null(coef)
       )
+      if(is.null(coef)) {
+        coef = qr.coef(qr(self$x[,M]), self$y)
+      }
+      self$coef = matrix(coef, ncol=1)
       
-      if(!is.null(M)){
-        M <- as.integer(M)
-        stopifnot(
-          min(M) >= 1, max(M) <= self$p
-        )
-        self$M = M
-        
-        if(is.null(coef)) {
-          self$coef = qr.coef(qr(self$x[,M]), self$y)
-        }
-        coef <- private$reshape_colmat(coef)
-        stopifnot(nrow(coef) == length(M))
-        self$coef <- coef
+      self$Sigma = crossprod(self$x[,self$M])/self$n
+      
+      assert_double(alpha, lower = 0, upper = 1, any.missing = F, len = 1)
+      self$alpha = alpha
+      
+      Nboot = assert_count(Nboot, positive=T, coerce=T)
+      self$Nboot = Nboot
+      
+      seed = assert_integerish(seed, null.ok = T, coerce = T)
+      self$seed = seed
+      
+      assert_choice(target_type, c("fixed", "random"))
+      self$target_type = target_type
+      
+      assert_flag(standardize)
+      self$standardize = standardize
+      assert_flag(intercept)
+      self$intercept = intercept
+      assert_flag(center_outcome)
+      self$center_outcome = center_outcome
+      
+      if(intercept){
+        #TODO: Stub
       }
       
-      Nboot = as.integer(Nboot)
-      if(!is.null(seed))
-        seed = as.integer(seed)
+      if(center_outcome){
+        self$y = self$y - mean(self$y)
+      }
       
-      self$alpha = alpha
-      self$Nboot = Nboot
-      self$seed = seed
+      if(is.null(attr(self$x, "uposi:center"))) {
+        # center columns of x
+        means <- colMeans(self$x)
+        self$x <- sweep(self$x, 2, means, "-")
+        attr(self$x, "uposi:center") <- means
+      }
+      
+      if(standardize) {
+        # make standardization idempotent
+        if(is.null(attr(self$x, "uposi:scale"))) {
+          # scale columns of x
+          l2 <- sqrt(colMeans(self$x^2))
+          self$x <- sweep(self$x, 2, l2, "/")
+          attr(self$x, "uposi:scale") <- l2
+        }
+      }
+      
+      if(self$stage == 1) {
+        assert_r6(uposi_stage2, "Uposi", public=c("x","y","M"))
+        assert_integerish(a2, lower=0, upper=1, any.missing = F, len=self$n)
+        if(test_matrix(original_blip, nrows=self$n, ncols=1))
+          original_blip = as.numeric(original_blip)
+        assert_numeric(original_blip, any.missing=F, len=self$n)
+      }
+      
+      self$uposi_stage2 = uposi_stage2
+      self$a2 = a2
+      self$original_blip = original_blip
+      
+      invisible(self)
       
     },
     
@@ -78,39 +153,119 @@ Uposi <- R6::R6Class(
         confint()
     },
     
-    bootstrap = function(Nboot) {
+    bootstrap = function(Nboot = NULL) {
       if(!is.null(self$seed))
         set.seed(self$seed)
       
-      stopifnot(is.null(Nboot) || (length(Nboot) == 1 && is.numeric(Nboot)))
-      if(!is.null(Nboot))
-        self$Nboot = as.integer(Nboot)
+      if(!is.null(Nboot)) {
+        Nboot = assert_count(Nboot, positive=T, coerce=T)
+        self$Nboot = Nboot
+      }
       
-      self$boots = replicate(self$Nboot, self$boot_iter())
+      self$boots = if(self$stage == 1) {
+        future_replicate(self$Nboot, self$boot_iter_stage1())
+      } else {
+        future_replicate(self$Nboot, self$boot_iter_stage2())
+      }
+      
       invisible(self)
     },
     
+    boot_iter_stage2 = function() {
+      e <- private$gen_mult_norm()
+      ret <- switch(
+        self$target_type,
+        fixed = private$xy_iter_stage2(e),
+        random = c(private$xy_iter_stage2(e), private$xx_iter_stage2(e)),
+        stop("Invalid target_type!")
+      )
+      return(ret)
+    },
+    
+    boot_iter_stage1 = function() {
+      e <- private$gen_mult_exp()
+      
+      new_coef <- qr.coef(
+        qr(private$row_mult(
+          self$uposi_stage2$x[,self$uposi_stage2$M, drop=F], sqrt(e)
+        )),
+        sqrt(e) * self$uposi_stage2$y
+      )
+      
+      new_blip <- private$blip(new_coef)
+      ret <- switch(
+        self$target_type,
+        fixed = private$xy_iter_stage1(e, new_blip),
+        random = c(private$xy_iter_stage1(e, new_blip), 
+                   private$xx_iter_stage1(e)),
+        stop("Invalid target_type!")
+      )
+      # ret <- if(self$target_type == "fixed") {
+      #   private$xy_iter_stage1(e, new_blip)
+      # } else {
+      #   c(private$xy_iter_stage1(e, new_blip), private$xx_iter_stage1(e))
+      # }
+      return(ret)
+    },
+    
     extract_quantile = function() {
-      stop("Not implemented! Call the sub-classes.")
+      switch(
+        self$target_type,
+        fixed = assert(
+          check_matrix(self$boots, nrows=1, ncols=self$Nboot, mode="numeric",
+                       all.missing=F),
+          check_numeric(self$boots, len=self$Nboot, all.missing = F)
+        ),
+        random = assert_matrix(self$boots, nrows=2, ncols=self$Nboot, 
+                               mode="numeric", all.missing=F),
+        stop("Invalid target_type in extract_quantile!")
+      )
+      # if(self$target_type == "fixed"){
+      #   assert(
+      #     check_matrix(self$boots, nrows=1, ncols=self$Nboot, mode="numeric",
+      #                  all.missing=F),
+      #     check_numeric(self$boots, len=self$Nboot, all.missing = F)
+      #   )
+      # } else {
+      #   assert_matrix(self$boots, nrows=2, ncols=self$Nboot, mode="numeric",
+      #                 all.missing=F)
+      # }
+      
+      if(self$target_type == "random") {
+        coef_l1 <- sum(abs(self$coef))
+        RHS <- self$boots[1,] + self$boots[2,] * coef_l1
+      } else {
+        RHS <- self$boots
+      }
+      self$C_alpha = unname(quantile(RHS, probs=1-self$alpha))
+      
+      self$test_stat_H0 <- max(abs(crossprod(self$x, self$y)))/self$n
+      if(self$target_type == "random") RHS <- self$boots[1,]
+      self$pval_H0 <- mean(RHS >= self$test_stat_H0)
+      self$C_alpha_H0 <- unname(quantile(RHS, probs=1-self$alpha))
+      
+      invisible(self)
+      
     },
     
     confint = function() {
-      stopifnot(
-        !is.null(self$x),
-        !is.null(self$n),
-        !is.null(self$M),
-        !is.null(self$C_alpha),
-        !is.null(self$coef)
-      )
-      # self$Sigma <- crossprod(self$x[,self$M])/self$n
+      assert_numeric(self$C_alpha, len=1, all.missing=F, finite=T)
+      
+      if(self$standardize){
+        unscale <- attr(self$x, "uposi:scale")[self$M]
+      } else {
+        unscale <- 1
+      }
+      if(self$intercept)
+        stop("Testing the intercept is unsupported at this time.")
       self$Sigmainv <- solve(self$Sigma)
-      ci_half_len <- rowSums(abs(self$Sigmainv)) * self$C_alpha
+      ci_half_len <- unscale * rowSums(abs(self$Sigmainv)) * self$C_alpha
       ci <- cbind(self$coef - ci_half_len, self$coef + ci_half_len)
       colnames(ci) <- c("Lower", "Upper")
       rownames(ci) <- colnames(self$x[,self$M])
       self$ci <- ci
       
-      ci_half_len <- diag(self$Sigmainv) * self$C_alpha
+      ci_half_len <- unscale * diag(self$Sigmainv) * self$C_alpha
       ci_2 <- cbind(self$coef - ci_half_len, self$coef + ci_half_len)
       colnames(ci_2) <- c("Lower", "Upper")
       rownames(ci_2) <- colnames(self$x[,self$M])
@@ -120,10 +275,6 @@ Uposi <- R6::R6Class(
     
     pred_int = function(X) {
       stopifnot(ncol(X) == nrow(self$Sigmainv))
-      # xSinvx <- rowSums((X %*% self$Sigmainv) * X)
-      # x_sel_max <- apply(abs(X), 1, max)
-      # stopifnot(is.numeric(x_sel_max))
-      # pred_half_len <- self$C_alpha * (xSinvx / x_sel_max)
       xSinv_l1 <- rowSums(abs(X %*% self$Sigmainv))
       pred_half_len <- self$C_alpha * xSinv_l1
       pred <- as.numeric(X %*% self$coef)
@@ -135,50 +286,97 @@ Uposi <- R6::R6Class(
   ),
   
   private = list(
-    reshape_colmat = function(x) {
-      stopifnot(is.matrix(x) || is.numeric(x))
-      if(is.matrix(x))
-        stopifnot(ncol(x) == 1)
-      
-      if(is.numeric(x)) {
-        x <- matrix(x, ncol = 1)
-      }
-      
-      return(x)
-    },
+    # extract_quantile_fixed = function() {
+    #   assert(
+    #     check_matrix(self$boots, nrows=1, ncols=self$Nboot, mode="numeric",
+    #                  all.missing=F),
+    #     check_numeric(self$boots, len=self$Nboot, all.missing = F)
+    #   )
+    #   
+    #   self$C_alpha = unname(quantile(self$boots, probs=1-self$alpha))
+    #   
+    #   test_stat_H0 <- max(abs(crossprod(self$x, self$y)))
+    #   
+    #   RHS <- self$boots
+    #   self$pval_H0 <- mean(RHS >= test_stat_H0)
+    #   self$C_alpha_H0 <- unname(quantile(RHS, probs=1-self$alpha))
+    #   
+    #   invisible(self)
+    # },
+    # 
+    # extract_quantile_random = function() {
+    #   
+    #   assert_matrix(self$boots, nrows=2, ncols=self$Nboot, mode="numeric",
+    #                 all.missing=F)
+    #   
+    #   test_stat_H0 <- max(abs(self$Sigma %*% self$coef))
+    #   
+    #   coef_l1 <- sum(abs(self$coef))
+    #   
+    #   RHS <- self$boots[1,] + self$boots[2,] * coef_l1
+    #   self$C_alpha <- unname(quantile(RHS, probs=1-self$alpha))
+    #   
+    #   RHS <- self$boots[1,]
+    #   self$pval_H0 <- mean(RHS >= test_stat_H0)
+    #   self$C_alpha_H0 <- unname(quantile(RHS, probs=1-self$alpha))
+    #   
+    #   invisible(self)
+    # },
     
     gen_mult = function() {
-      stopifnot(
-        !is.null(self$n)
-      )
+      if(stage == 2) {
+        e <- private$gen_mult_norm()
+      } else {
+        e <- private$gen_mult_exp()
+      }
+      return(e)
+    },
+    
+    gen_mult_norm = function() {
       e <- rnorm(self$n)
       return(e - mean(e))
     },
     
-    xy_iter = function(e) {
-      stopifnot(
-        !is.null(self$x),
-        !is.null(self$y),
-        !is.null(self$n),
-        is.numeric(e), length(e) == self$n
-      )
+    gen_mult_exp = function() {
+      e <- rexp(self$n, 1)
+      return(e/mean(e))
+    },
+    
+    xy_iter_stage2 = function(e) {
       return(
         max(abs(crossprod(self$x, self$y * e)/self$n))
       )
     },
     
-    xx_iter = function(e) {
-      stopifnot(
-        !is.null(self$x),
-        !is.null(self$y),
-        !is.null(self$n),
-        is.numeric(e), length(e) == self$n
-      )
-      
+    xx_iter_stage2 = function(e) {
       tmp <- abs(crossprod(self$x, private$row_mult(self$x, e))/self$n)
       return(
         max(tmp)
       )
+    },
+    
+    xy_iter_stage1 = function(e, blip) {
+      assert(
+        check_numeric(blip, len=self$n),
+        check_matrix(blip, mode="numeric", nrows=self$n, ncols=1)
+      )
+      return(
+        max(abs(
+          crossprod(
+            self$x,
+            e * (self$y + blip - self$original_blip) - (self$y)
+          )/self$n
+        ))
+      )
+    },
+    
+    xx_iter_stage1 = function(e) {
+      return(max(abs(crossprod(self$x, private$row_mult(self$x, e-1))/self$n)))
+    },
+    
+    blip = function(coefs) {
+      delta <- as.numeric(self$uposi_stage2$x[,self$uposi_stage2$M, drop=F] %*% coefs)
+      return(pmax(delta, 0) - self$a2 * delta)
     },
     
     #' Helper: Row multiplication
@@ -296,57 +494,6 @@ UposiRandom <- R6::R6Class(
   )
 )
 
-
-UposiRandomWeight <- R6::R6Class(
-  "UposiRandomWeight",
-  inherit = UposiRandom,
-  public = list(
-    
-    weights = NULL,
-    
-    initialize = function(..., weights) {
-      super$initialize(...)
-      stopifnot(length(weights) == self$p)
-      self$weights <- weights
-    },
-    
-    boot_iter = function() {
-      e <- super$gen_mult()
-      return(c(private$xy_iter(e), private$xx_iter(e)))
-    }
-  ),
-  
-  private = list(
-    
-    xy_iter = function(e) {
-      stopifnot(
-        !is.null(self$x),
-        !is.null(self$y),
-        !is.null(self$n),
-        is.numeric(e), length(e) == self$n
-      )
-      return(
-        max(self$weights * abs(crossprod(self$x, self$y * e)/self$n))
-      )
-    },
-    
-    xx_iter = function(e) {
-      stopifnot(
-        !is.null(self$x),
-        !is.null(self$y),
-        !is.null(self$n),
-        is.numeric(e), length(e) == self$n
-      )
-      
-      tmp <- abs(crossprod(self$x, super$row_mult(self$x, e))/self$n)
-      tmp <- super$row_mult(super$col_mult(tmp, self$weights), self$weights)
-      return(
-        max(tmp)
-      )
-    }
-  )
-)
-
 UposiStage1 <- R6::R6Class(
   "UposiStage1",
   inherit = UposiRandom,
@@ -416,7 +563,7 @@ UposiStage1 <- R6::R6Class(
         max(abs(
           crossprod(
             self$x,
-            e * (self$y + blip) - (self$y + self$original_blip)
+            e * (self$y + blip - self$original_blip) - (self$y)
           )/self$n
         ))
       )
@@ -440,60 +587,6 @@ UposiStage1 <- R6::R6Class(
       
       delta <- as.numeric(self$uposi_stage2$x[,self$uposi_stage2$M, drop=F] %*% coefs)
       return(pmax(delta, 0) - self$a2 * delta)
-    }
-  )
-)
-
-## Stg 1 Weight
-UposiStage1Weight <- R6::R6Class(
-  "UposiStage1Weight",
-  inherit = UposiStage1,
-  public = list(
-    
-    weights = NULL,
-    
-    initialize = function(..., weights) {
-      super$initialize(...)
-      stopifnot(length(weights) == self$p)
-      self$weights <- weights
-    }
-  ),
-  
-  private = list(
-    
-    xy_iter = function(e, blip) {
-      stopifnot(
-        !is.null(self$x),
-        !is.null(self$y),
-        !is.null(self$n),
-        is.numeric(e), length(e) == self$n,
-        (
-          is.numeric(blip) && length(blip) == self$n
-        ) || (
-          is.matrix(blip) && nrow(blip) == self$n && ncol(blip) == 1
-        )
-      )
-      return(
-        max(abs(
-          self$weights * crossprod(
-            self$x, 
-            e * (self$y + blip) - (self$y + self$original_blip)
-          )/self$n
-        ))
-      )
-    },
-    
-    xx_iter = function(e) {
-      stopifnot(
-        !is.null(self$x),
-        !is.null(self$y),
-        !is.null(self$n),
-        is.numeric(e), length(e) == self$n
-      )
-      
-      tmp <- abs(crossprod(self$x, super$row_mult(self$x, e-1))/self$n)
-      tmp <- super$row_mult(super$col_mult(tmp, self$weights), self$weights)
-      return(max(tmp))
     }
   )
 )

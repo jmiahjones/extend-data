@@ -1,0 +1,5 @@
+*.html
+*.pdf
+*.tex
+results_files/
+results-no-noise_files/

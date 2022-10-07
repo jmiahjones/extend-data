@@ -1,0 +1,335 @@
+---
+title: "Confidence Intervals for the EXTEND Data"
+subtitle: "Analysis using two-way interactions and no noise variables"
+author: "Jeremiah Jones"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: 
+    keep_tex: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(magrittr)
+pretty_list_english <- function(ch_vec) {
+  n <- length(ch_vec)
+  ret <- if(n <= 0) {
+    stop("Degenerate length!")
+  } else if(n == 1) {
+    ch_vec
+  } else if(n == 2) {
+    paste0(ch_vec[1], " and ", ch_vec[2])
+  } else {
+    last <- ch_vec[n]
+    first <- paste(ch_vec[-n], collapse=", ")
+    paste0(first, ", and ", last)
+  }
+  ret
+}
+collapse_noise <- function(ch_vec) {
+  if(length(ch_vec) <= 1) {
+    stop("Only length 1!")
+  }
+  n <- length(ch_vec)
+  noisesB <- stringr::str_detect(ch_vec, "noise")
+  out_vec <- ch_vec[!noisesB]
+  c(out_vec, paste0(sum(noisesB), " noise variables"))
+}
+list_the_model_vars <- function(stage) {
+  ret <- if(stage == 2) {
+    colnames(Q2_sel_mat) %>% stringr::str_remove("a2c:") %>% 
+      collapse_noise %>% pretty_list_english
+  } else if(stage == 1) {
+    colnames(Q1_sel_mat) %>% stringr::str_remove("a1c:") %>% 
+      collapse_noise %>% pretty_list_english
+  } else {
+    stop("Incorrect Stage!")
+  }
+  ret
+}
+Pval_format <- function(p){
+  ret <- if(p >= .01){
+    sprintf("%.2f", p)
+  } else {
+    "<.01"
+  }
+  ret
+}
+```
+
+```{r load, include=FALSE}
+load("../results/no-noise-run.RData")
+```
+
+
+We analyzed the Extend data using our methods. In addition to the UPOSI-based method, we also included naive methods that ignored the model selection event: one based on the robust sandwich estimator, and another based on the perturbation bootstrap with standard exponential weights.
+
+Since the data is relatively low-dimensional, took pairwise interactions among the possible tailoring variables to construct the full-model $\bar{X}_{j}^0$ in each stage. In the second stage, we additionally allowed these pairwise interactions to differ among first-stage response groups, so that this full library of terms included differing two-way interactions among response groups, along with the single-variable terms differing by response group. In total, that leads to a full model of size `r ncol(Q2_big)` in the second stage and `r ncol(Q1_mat)` in the first.
+
+We selected the model using the minimax concave penalty, using 10-fold cross-validation to select the tuning parameter $\lambda$. Since we did not need to compare to selective inference, we removed the penalty from the treatment variables in each stage, so that the overall treatment effect term in Stage 1 and treatment effect by response interaction terms would remain in the model.
+
+### Stage 2
+
+Using the cross-validated minimax concave penalty, the Stage 2 model included only the unpenalized terms: the response and nonresponse interactions with the centered $A_2$ variable. That is, all penalized terms were removed from the model.
+The inferential results are summarized below:
+
+
+```{r stage2, message=FALSE, warning=FALSE, echo=FALSE}
+library(dplyr)
+library(kableExtra)
+boot2 <- tibble(
+  method = "Naive bootstrap",
+  var = rownames(ci_stg2_boot),
+  coefficient=coef(rob_Q2_fit),
+  lower=ci_stg2_boot[,1],
+  upper=ci_stg2_boot[,2],
+  length=ci_stg2_boot[,3]
+)
+sand2 <- tibble(
+  method = "Naive Sandwich Estimator",
+  var = rownames(ci_sand_stg2),
+  coefficient=coef(rob_Q2_fit),
+  lower=ci_sand_stg2[,1],
+  upper=ci_sand_stg2[,2],
+  length=ci_sand_stg2[,3]
+)
+# si2 <- tibble(
+#   method = "SI",
+#   var = rownames(ci_si_stg2),
+#   coefficient=coef(rob_Q2_fit),
+#   lower=ci_si_stg2[,1],
+#   upper=ci_si_stg2[,2],
+#   length=ci_si_stg2[,3]
+# )
+uposi2 <- tibble(
+  method = "UPOSI",
+  var = rownames(ci_stg2),
+  coefficient=coef(rob_Q2_fit),
+  lower=ci_stg2[,1],
+  upper=ci_stg2[,2],
+  length=ci_stg2[,3]
+)
+
+
+boot2 %>% 
+  # union(si2) %>% 
+  union(uposi2) %>% union(sand2) %>%
+  select(var, method, everything()) %>% 
+  mutate(var = stringr::str_remove(var, "a2c:")) %>% 
+  arrange(var, method) %>% 
+  rename(Variable=var,
+         `Inference Method`=method,
+         Coefficient=coefficient,
+         `Lower Limit`=lower, `Upper Limit`=upper,
+         Length=length
+         ) %>% 
+  kbl(digits=3) %>%
+  # kbl(digits=3, booktabs = T) %>% 
+  kable_paper("striped", full_width=F) %>%
+  add_header_above(c(" "=3, "Confidence Intervals"=3)) %>% 
+  collapse_rows(columns=1, valign="top")
+
+```
+
+```{r overall-test-2, echo=FALSE}
+summ2 <- summary(rob_Q2_fit)
+Pval_par2 <- 1-pf(summ2$fstatistic[1], summ2$fstatistic[2], summ2$fstatistic[3])
+```
+
+
+```{r results='asis', include=FALSE}
+boot2 %>% 
+  # union(si2) %>% 
+  union(uposi2) %>% union(sand2) %>%
+  select(var, method, everything()) %>% 
+  mutate(var = stringr::str_remove(var, "a2c:")) %>% 
+  arrange(var, method) %>% 
+  rename(Variable=var,
+         `Inference Method`=method,
+         Coefficient=coefficient,
+         `Lower Limit`=lower, `Upper Limit`=upper,
+         Length=length
+         ) %>% 
+  # kbl(digits=3) %>%
+  kbl(digits=3, format="latex", booktabs = T) %>%
+  # kable_paper("striped", full_width=F) %>%
+  add_header_above(c(" "=3, "Confidence Intervals"=3)) %>% 
+  collapse_rows(columns=1, valign="top")
+```
+
+```{r include=FALSE}
+summary(rob_Q2_fit) -> foo
+1-pf(foo$fstatistic[1], foo$fstatistic[2], foo$fstatistic[3])
+print(foo)
+Pval2
+```
+
+The UPoSI omnibus test gave a p-value of `r Pval_format(Pval2)` while `summary.lm` gave a p-value of `r Pval_format(Pval_par2)`.
+
+
+### Stage 1
+
+Recall that $A_1=1$ signifies the more "lenient" definition of non-response, with five or more heavy drinking days being defined as nonresponse to Naltrexone, while $A_1=0$ signifies the "strict" definition using two or more days.
+
+The Stage 1 model included the centered $A_1$ "intercept" term along with the obsessive-compulsive drinking scale term.
+The inferential results are summarized below:
+
+```{r stage1, message=FALSE, warning=FALSE, echo=FALSE}
+boot1 <- tibble(
+  method = "Naive bootstrap",
+  var = rownames(ci_stg1_boot),
+  coefficient=coef(rob_Q1_fit),
+  lower=ci_stg1_boot[,1],
+  upper=ci_stg1_boot[,2],
+  length=ci_stg1_boot[,3]
+)
+sand1 <- tibble(
+  method = "Naive Sandwich Estimator",
+  var = rownames(ci_stg1_boot),
+  coefficient=coef(rob_Q1_fit),
+  lower=ci_sand_stg1[,1],
+  upper=ci_sand_stg1[,2],
+  length=ci_sand_stg1[,3]
+)
+# si1 <- tibble(
+#   method = "SI",
+#   var = rownames(ci_si_stg1),
+#   coefficient=coef(rob_Q1_fit),
+#   lower=ci_si_stg1[,1],
+#   upper=ci_si_stg1[,2],
+#   length=ci_si_stg1[,3]
+# )
+uposi1 <- tibble(
+  method = "UPOSI",
+  var = rownames(ci_stg1_boot),
+  coefficient=coef(rob_Q1_fit),
+  lower=ci_stg1[,1],
+  upper=ci_stg1[,2],
+  length=ci_stg1[,3]
+)
+
+
+boot1 %>% 
+  # union(si1) %>%
+  union(uposi1) %>% union(sand1) %>%
+  select(var, method, everything()) %>% 
+  mutate(var = stringr::str_remove(var, "a1c:")) %>% 
+  arrange(var, method) %>% 
+  rename(Variable=var,
+         `Inference Method`=method,
+         Coefficient=coefficient,
+         `Lower Limit`=lower, `Upper Limit`=upper,
+         Length=length
+         ) %>% 
+  kbl(digits=3) %>%
+  # kbl(digits=3, booktabs = T) %>%
+  kable_paper("striped", full_width=F) %>%
+  add_header_above(c(" "=3, "Confidence Intervals"=3)) %>% 
+  collapse_rows(columns=1, valign="top")
+
+```
+
+
+```{r overall-test-1, echo=FALSE, results='hide'}
+summ1 <- summary(rob_Q1_fit)
+Pval_par1 <- 1-pf(summ1$fstatistic[1], summ1$fstatistic[2], summ1$fstatistic[3])
+```
+
+
+```{r}
+boot2 %>% 
+  # union(si2) %>% 
+  union(uposi2) %>% #union(sand2) %>%
+  mutate(stage=2) %>% 
+  mutate(var = stringr::str_remove(var, "a2c:")) %>% 
+  union(
+    boot1 %>% 
+      # union(si1) %>%
+      union(uposi1) %>% #union(sand1) %>%
+      mutate(stage=1, 
+             var = stringr::str_remove(var, "a1c:"))
+  ) %>% 
+  select(stage, var, coefficient, method, everything()) %>% 
+  arrange(stage, var, method) %>% 
+  mutate(method=if_else(method=="Naive bootstrap", "Naive", method),
+         method = if_else(sign(lower)*sign(upper)>0, paste0(method, "*"), method)) %>% 
+  rename(Variable=var,
+         `Inference Method`=method,
+         Coefficient=coefficient,
+         `Lower Limit`=lower, `Upper Limit`=upper,
+         Length=length,
+         Stage=stage
+         ) %>% 
+  # kbl(digits=3) %>%
+  kbl(digits=3, booktabs = T) %>%
+  # kable_paper("striped", full_width=F) %>%
+  add_header_above(c(" "=4, "Confidence Intervals"=3)) %>% 
+  collapse_rows(columns=1:3, valign="middle")
+
+```
+
+The UPoSI omnibus test gave a p-value of `r Pval_format(Pval1)` while `summary.lm` gave a p-value of `r Pval_format(Pval_par1)`. There doesn't seem to be any significant overall difference between the two definitions of nonresponse (which is encoded in $A_1$), but the overall UPoSI-based test signifies that there is some weak evidence that higher values of the obsessive-compulsive drinking scale should signify the lenient definition.
+
+## Graphical Summaries
+
+```{r}
+library(ggplot2)
+plot_df <- boot2 %>% 
+  # union(si2) %>% 
+  union(uposi2) %>% 
+  union(sand2) %>%
+  mutate(stage=2) %>% 
+  mutate(var = stringr::str_remove(var, "a2c:")) %>% 
+  union(
+    boot1 %>% 
+      # union(si1) %>%
+      union(uposi1) %>% 
+      union(sand1) %>%
+      mutate(stage=1, 
+             var = stringr::str_remove(var, "a1c:"))
+  ) %>% 
+  select(stage, var, coefficient, method, everything()) %>% 
+  arrange(stage, var, method) %>% 
+  mutate(method=if_else(method=="Naive bootstrap", "Naive", method),
+         sig = factor(sign(lower)*sign(upper)<=0, labels=c("Discovery", "No Discovery"), levels=c(F,T))) %>% 
+  mutate(stage=factor(stage, levels=c(2,1), labels=c("Stage 2", "Stage 1")))
+```
+
+```{r}
+plot_df %>% 
+  ggplot(aes(x=method, y=var)) + 
+  # geom_point(aes(color=sig, shape=sig, fill=sig), size=3) +
+  geom_tile(aes(fill=sig), color="black") +
+  scale_fill_brewer(type="div", palette=3) +
+  scale_x_discrete(expand=c(0,0)) +
+  scale_y_discrete(expand=c(0,0)) +
+  facet_grid(rows=vars(stage), scales = "free_y") +
+  theme_bw() + 
+  theme(legend.position = "bottom",
+        # panel.grid = element_blank(),
+        # panel.border = element_blank()
+        ) +
+  labs(x="", y="", title="Discoveries by Inference Method",
+       fill="", color="", shape="")
+```
+
+```{r}
+plot_df %>% 
+  ggplot(aes(y=var, x=length)) + 
+  geom_point(aes(color=method, shape=method), size=3) +
+  scale_x_continuous(trans="log2", oob=scales::censor,
+                     # limits=4**c(-2, 1.6),
+                     # breaks=4**c(-2:2),
+                     # labels = sapply(c(-2:2), labeling)
+                     labels = scales::trans_format("log2", scales::math_format(2^.x))
+                     ) +
+  # scale_fill_brewer(type="qual", palette=1) +
+  scale_color_brewer(type="qual", palette=1) +
+  # scale_shape_manual(values=c(18,17,20)) +
+  # scale_shape_manual(values = c(1,2)) +
+  facet_grid(rows=vars(stage), scales = "free_y") +
+  theme_bw() + theme(legend.position = "bottom") +
+  labs(x="Confidence Interval Length", y="Term", title="", color="Inference Method", shape="Inference Method")
+```
+
