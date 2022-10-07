@@ -119,41 +119,13 @@ print(ci_stg2_boot)
 ### Begin UPoSI
 
 set.seed(2022)
-# N_boot <- 10000
-# omegas <- replicate(N_boot, rpois(n, lambda=1))
-# # omegas <- replicate(N_boot, rexp(n, rate=1))
-# # omegas <- replicate(N_boot, as.numeric(rmultinom(n=1, size=nrow(Q2_mat), prob=rep(1,nrow(Q2_mat)))))
-# boot_lm_2 <- function(idx) {
-#   e <- omegas[,idx]
-#   max(abs(crossprod(Q2_mat, y2c * (e - mean(e)))))/n
-# }
-# boot_uposi <- sapply(1:N_boot, boot_lm_2)
-# alpha <- .2
-# C_alpha_H0 <- quantile(boot_uposi, probs=c(1-alpha))
-# test_stat_H0 <- max(abs(crossprod(y2c, Q2_sel_mat)))/n
-# Pval <- mean(test_stat_H0 <= boot_uposi)
-
-
-
-
-# Gamma <- abs(crossprod(Q2_mat, y2c))
-# M2_hat <- c(1,tail(order(Gamma), n=10) + 1)
-# M2_hat_Q2 <- M2_hat[-1] - 1
-# which.max(Gamma)
-
 source("./R/uposi.R")
 alpha <- .05
-# uposi_stg2_rand <- UposiRandom$new(
-#   Q2_big, y2c, M = M2_hat_Q2, 
-#   coef=coef(rob_Q2_fit), alpha = alpha, Nboot = 10000, seed = 2022
-# )
 uposi_stg2 <- Uposi$new(
   Q2_big, y2c, stage=2, M = M2_hat_Q2, 
   coef=coef(rob_Q2_fit), alpha = alpha, Nboot = 10000, seed = 2022
 )
 uposi_stg2$do()
-# 1-uposi_stg2$pval_H0
-# uposi_stg2$ci_2
 Pval2 <- uposi_stg2$pval_H0 # mean(uposi_stg1$boots[1,] <= test_stat_H01)
 test_stat_H02 <- uposi_stg2$test_stat_H0
 C_alpha_H02 <- uposi_stg2$C_alpha_H0

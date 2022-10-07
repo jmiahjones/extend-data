@@ -8,7 +8,7 @@ RNGkind("L'Ecuyer-CMRG")
 library(mlr3verse)
 library(lgr)
 mlr3_logger <- mlr_reflections$loggers$mlr3
-mlr3_logger$set_threshold("warn")
+mlr3_logger$set_threshold("error")
 
 # log to file rather than console
 lgr$remove_appender("console")
@@ -230,10 +230,6 @@ set.seed(2022)
 
 source("./R/uposi.R")
 alpha <- .05
-# uposi_stg2_rand <- UposiRandom$new(
-#   Q2_big, y2c, M = M2_hat_Q2, 
-#   coef=coef(rob_Q2_fit), alpha = alpha, Nboot = 10000, seed = 2022
-# )
 uposi_stg2 <- Uposi$new(
   Q2_big, y2c, stage=2, M = M2_hat_Q2, 
   coef=coef(rob_Q2_fit), alpha = alpha, Nboot = 10000, seed = 2022

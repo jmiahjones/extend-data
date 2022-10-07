@@ -8,7 +8,7 @@ RNGkind("L'Ecuyer-CMRG")
 library(mlr3verse)
 library(lgr)
 mlr3_logger <- mlr_reflections$loggers$mlr3
-mlr3_logger$set_threshold("warn")
+mlr3_logger$set_threshold("error")
 
 # log to file rather than console
 lgr$remove_appender("console")
