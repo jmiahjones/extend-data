@@ -293,10 +293,10 @@ a1c <- final_df$A1 - 0.5
 # h2_form <- as.formula(paste0("y2c ~ a2c + a2c:r2c + a2c:I(1-r2c) + (a2c):(", paste0(h2_tailor, collapse=" + "), ") - 1"))
 h1_form <- as.formula(paste0("y1c ~ a1c + a1c:(", paste0(h1_tailor, collapse=" + "), ")^2 - 1"))
 # h1_form <- as.formula(paste0("y1c ~ a1c + a1c:(", paste0(h1_tailor, collapse=" + "), ") - 1"))
-scale_df <- final_df %>%
-  mutate(across(dplyr::all_of(setdiff(h1_tailor, dummy_vars)), scale))
-Q1_mat <- model.matrix(as.formula(h1_form), data=scale_df)
-Q1_mat <- scale(Q1_mat, T, F)
+# scale_df <- final_df %>%
+#   mutate(across(dplyr::all_of(setdiff(h1_tailor, dummy_vars)), scale))
+Q1_mat <- model.matrix(as.formula(h1_form), data=final_df)
+# Q1_mat <- scale(Q1_mat, T, F)
 
 # noise1 <- noise[,1:(50-ncol(Q1_mat))]
 # Q1_mat <- cbind(Q1_mat, noise1 * a1c)
